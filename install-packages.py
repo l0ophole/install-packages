@@ -43,9 +43,16 @@ def get_install_solution(pkgs):
     from subprocess import check_output, STDOUT, CalledProcessError
     try:
         output = check_output(args=args, shell=False, universal_newlines=True, stderr=STDOUT)
-    except CalledProcessError:
-        import traceback
-        print(f"get_install_solution(): ERROR: {traceback.format_exc()}")
+    except FileNotFoundError:
+        print("ERROR: pacman was not found. This tool only runs on Arch Linux.")
+        return
+    except CalledProcessError as e:
+        # pacman could not resolve one or more of the requested packages.
+        # Show pacman's own message instead of a Python traceback.
+        detail = (e.output or "").strip()
+        print(f"ERROR: pacman could not resolve the requested packages.")
+        if detail:
+            print(detail)
         return
     for line in output.split('\n'):
         line = line.strip().rstrip('\n')
@@ -87,7 +94,11 @@ def find_headers_file():
 
 def download(url,filename):
     import requests
-    resp = requests.get(url, allow_redirects=True)
+    try:
+        resp = requests.get(url, allow_redirects=True, timeout=30)
+    except requests.RequestException as e:
+        print(f"Download error: {e}")
+        return False, None
     if resp.status_code >= 400:
         print(f"Download error: {resp.status_code}")
         return False, None
@@ -112,15 +123,28 @@ def install(filename):
 def install_from_archive(solution_item):
     wanted_filename = solution_item.filename()
     pkgname = '-'.join(wanted_filename.split('-')[:-3])
-    #cached_file = solution_item.cached_file()
-    #download_url = solution_item.download_url()
+    # If pacman already has this exact file in its cache, install that
+    # copy directly instead of downloading it from the Archive again.
+    cached_file = solution_item.cached_file()
+    if cached_file and os.path.isfile(cached_file):
+        print(f"Using cached file: {cached_file}")
+        success, install_file = install(cached_file)
+        if not success:
+            print(f"ERROR: Package {pkgname} failed to install. ({install_file})")
+            return False
+        print(f"Package {pkgname} was installed successfully.")
+        return True
     headers_file = find_headers_file()
     pkgindex = pkgname[0]
     ala_base_url = "https://archive.archlinux.org/packages"
     ala_host_addr = urlparse(ala_base_url).netloc
     headers = load_headers(headers_file)
     url = '/'.join([ala_base_url, pkgindex])
-    resp = requests.get(url=url, headers=headers, allow_redirects=True)
+    try:
+        resp = requests.get(url=url, headers=headers, allow_redirects=True, timeout=30)
+    except requests.RequestException as e:
+        print(f"ERROR: Could not reach the Arch Linux Archive: {e}")
+        return False
     soup = BeautifulSoup(resp.text, 'html.parser')
     links = soup.find_all('a')
     link_pkgname = None
@@ -139,7 +163,11 @@ def install_from_archive(solution_item):
     parsed = urlparse(link_href)
     filename = parsed.path
     second_url = '/'.join([ala_base_url, pkgindex, link_href])
-    resp2 = requests.get(url=second_url, headers=headers, allow_redirects=True)
+    try:
+        resp2 = requests.get(url=second_url, headers=headers, allow_redirects=True, timeout=30)
+    except requests.RequestException as e:
+        print(f"ERROR: Could not reach the Arch Linux Archive: {e}")
+        return False
     soup2 = BeautifulSoup(resp2.text, 'html.parser')
     soup2_links = soup2.find_all('a')
     file_url = None
@@ -185,6 +213,9 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('packages', action='store', type=str, nargs='*')
 args = parser.parse_args()
+
+if not args.packages:
+    parser.error("no packages given")
 
 # from multiprocessing import Manager
 # manager = Manager()
