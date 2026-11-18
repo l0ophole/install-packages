@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import requests
 from bs4 import BeautifulSoup
 import yaml
@@ -56,10 +57,33 @@ def get_install_solution(pkgs):
         yield (pkg, uri)
 
 def load_headers(file_path):
+    # Headers are optional. If no headers file exists, return {} so the
+    # Archive requests go out with the default requests headers instead
+    # of crashing. A headers file is YAML mapping header names to values.
+    if not file_path or not os.path.isfile(file_path):
+        return {}
     with open(file_path, 'r') as f:
         data = f.read()
     data = data.strip().rstrip('\n')
-    return yaml.safe_load(data)
+    loaded = yaml.safe_load(data)
+    return loaded if isinstance(loaded, dict) else {}
+
+def find_headers_file():
+    # Look for a headers.yaml in a few sensible places, in order:
+    #   1. $INSTALL_PACKAGES_HEADERS
+    #   2. next to this script
+    #   3. ~/.config/install-packages/headers.yaml
+    #   4. ~/scripts/headers.yaml (original author's layout)
+    candidates = [
+        os.environ.get("INSTALL_PACKAGES_HEADERS"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "headers.yaml"),
+        os.path.expanduser("~/.config/install-packages/headers.yaml"),
+        os.path.expanduser("~/scripts/headers.yaml"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
 
 def download(url,filename):
     import requests
@@ -90,7 +114,7 @@ def install_from_archive(solution_item):
     pkgname = '-'.join(wanted_filename.split('-')[:-3])
     #cached_file = solution_item.cached_file()
     #download_url = solution_item.download_url()
-    headers_file = "/home/rpf/scripts/headers.yaml"
+    headers_file = find_headers_file()
     pkgindex = pkgname[0]
     ala_base_url = "https://archive.archlinux.org/packages"
     ala_host_addr = urlparse(ala_base_url).netloc
@@ -109,6 +133,9 @@ def install_from_archive(solution_item):
             continue
         link_href = i['href']
         break
+    if not link_href:
+        print(f"ERROR: Package {pkgname} was not found in the Arch Linux Archive index.")
+        return False
     parsed = urlparse(link_href)
     filename = parsed.path
     second_url = '/'.join([ala_base_url, pkgindex, link_href])
@@ -135,6 +162,9 @@ def install_from_archive(solution_item):
         if link_filename == wanted_filename:
             version_tuple = {'filename': link_filename, 'url': file_url}
             break
+    if not version_tuple:
+        print(f"ERROR: File {wanted_filename} was not found in the Arch Linux Archive for package {pkgname}.")
+        return False
     filename = version_tuple.get('filename')
     file_url = version_tuple.get('url')
     if not file_url:
